@@ -11,12 +11,22 @@ import (
 )
 
 const (
+	runTime       = 15 * time.Second
+	printInterval = time.Second
+
 	sessionTTL = 3
+
+	electionPrefix = "leader"
+	electionValue  = ""
+)
+
+var (
+	endpoints = []string{"localhost:2379"}
 )
 
 func main() {
 	etcdClient, err := clientv3.New(clientv3.Config{
-		Endpoints: []string{"localhost:2379"},
+		Endpoints: endpoints,
 	})
 	if err != nil {
 		log.Panic(err)
@@ -29,34 +39,50 @@ func main() {
 	}
 	defer session.Close()
 
-	go manageTask(session)
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	defer cancelCtx()
+	isElected := make(chan bool, 1)
+	go runCampaign(ctx, session, isElected)
+	go manageTask(ctx, isElected)
 
-	time.Sleep(15 * time.Second)
-}
-
-func manageTask(session *concurrency.Session) {
-	election := concurrency.NewElection(session, "leader")
-
-	campaignDone := make(chan bool, 1)
-	go runCampaign(campaignDone, election)
-
-	isLeader := false
-	go task(&isLeader)
-
-	<-campaignDone
-	isLeader = true
-}
-
-func runCampaign(done chan<- bool, election *concurrency.Election) {
-	ctx := context.Background()
-	err := election.Campaign(ctx, "")
-	if err != nil {
-		log.Panic(err)
+	select {
+	case <-time.After(runTime):
+		fmt.Println("Program ended normally.")
+	case <-session.Done():
+		fmt.Println("Session closed early.")
 	}
-	done <- true
 }
 
-func task(isLeader *bool) {
+func runCampaign(ctx context.Context, session *concurrency.Session, isElected chan<- bool) {
+	election := concurrency.NewElection(session, electionPrefix)
+
+	err := election.Campaign(ctx, electionValue)
+	if err == nil {
+		isElected <- true
+	} else {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			log.Panic(err)
+		}
+	}
+}
+
+func manageTask(ctx context.Context, isElected <-chan bool) {
+	isLeader := false
+
+	go printRole(ctx, &isLeader)
+
+	select {
+	case <-isElected:
+		isLeader = true
+	case <-ctx.Done():
+		return
+	}
+}
+
+func printRole(ctx context.Context, isLeader *bool) {
 	for {
 		if *isLeader {
 			fmt.Println("I am leader.")
@@ -64,6 +90,11 @@ func task(isLeader *bool) {
 			fmt.Println("I am follower.")
 		}
 
-		time.Sleep(1 * time.Second)
+		select {
+		case <-time.After(printInterval):
+			// pass
+		case <-ctx.Done():
+			return
+		}
 	}
 }
