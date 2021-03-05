@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	runTime       = 15 * time.Second
-	printInterval = time.Second
+	runTime     = 15 * time.Second
+	printPeriod = time.Second
 
 	sessionTTL = 3
 
@@ -39,59 +39,54 @@ func main() {
 	}
 	defer session.Close()
 
+	election := concurrency.NewElection(session, electionPrefix)
+
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()
+
 	isElected := make(chan bool, 1)
-	go runCampaign(ctx, session, isElected)
-	go manageTask(ctx, isElected)
+	campaignErr := make(chan error, 1)
+	go runCampaign(ctx, election, isElected, campaignErr)
+	go printRole(ctx, isElected)
 
 	select {
-	case <-time.After(runTime):
-		fmt.Println("Program ended normally.")
 	case <-session.Done():
 		fmt.Println("Session closed early.")
+	case err := <-campaignErr:
+		fmt.Println("Campaign error.")
+		fmt.Println(err)
+	case <-time.After(runTime):
+		fmt.Println("Program ended normally.")
 	}
 }
 
-func runCampaign(ctx context.Context, session *concurrency.Session, isElected chan<- bool) {
-	election := concurrency.NewElection(session, electionPrefix)
-
+func runCampaign(ctx context.Context, election *concurrency.Election, isElected chan<- bool, errChan chan<- error) {
 	err := election.Campaign(ctx, electionValue)
 	if err == nil {
 		isElected <- true
 	} else {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			log.Panic(err)
-		}
+		errChan <- err
 	}
 }
 
-func manageTask(ctx context.Context, isElected <-chan bool) {
+func printRole(ctx context.Context, isElected <-chan bool) {
 	isLeader := false
-
-	go printRole(ctx, &isLeader)
-
-	select {
-	case <-isElected:
-		isLeader = true
-	case <-ctx.Done():
-		return
-	}
-}
-
-func printRole(ctx context.Context, isLeader *bool) {
 	for {
-		if *isLeader {
+		select {
+		case <-isElected:
+			isLeader = true
+		default:
+			// pass
+		}
+
+		if isLeader {
 			fmt.Println("I am leader.")
 		} else {
 			fmt.Println("I am follower.")
 		}
 
 		select {
-		case <-time.After(printInterval):
+		case <-time.After(printPeriod):
 			// pass
 		case <-ctx.Done():
 			return
