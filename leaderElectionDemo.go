@@ -71,23 +71,18 @@ func runCampaign(ctx context.Context, election *concurrency.Election, isElected 
 
 func printRole(ctx context.Context, isElected <-chan bool) {
 	isLeader := false
+	printTimer := time.NewTimer(0)
 	for {
 		select {
 		case <-isElected:
 			isLeader = true
-		default:
-			// pass
-		}
-
-		if isLeader {
-			fmt.Println("I am leader.")
-		} else {
-			fmt.Println("I am follower.")
-		}
-
-		select {
-		case <-time.After(printPeriod):
-			// pass
+		case <-printTimer.C:
+			if isLeader {
+				fmt.Println("I am leader.")
+			} else {
+				fmt.Println("I am follower.")
+			}
+			printTimer.Reset(printPeriod)
 		case <-ctx.Done():
 			return
 		}
